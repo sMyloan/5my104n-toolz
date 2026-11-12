@@ -1,0 +1,11 @@
+#!/bin/bash
+set -e
+
+update-mime-database /usr/share/mime
+
+update-desktop-database /usr/share/applications
+
+gtk-update-icon-cache -f /usr/share/icons/hicolor 2>/dev/null || true
+
+echo "5MY104N_TOOLZ installed successfully."
+exit 0

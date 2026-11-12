@@ -1,0 +1,9 @@
+Package: 5my104n-toolz
+Version: 1.1.29
+Priority: optional
+Architecture: amd64
+Depends: libqt6core6, libqt6gui6, libqt6widgets6, libqt6network6, libssl3, zlib1g, python3, shared-mime-info, desktop-file-utils
+Maintainer: 5My104n <5my104n@localhost>
+Description: Multi-protocol audit toolkit launcher
+ Graphical launcher for network and wireless audit scripts
+ with encrypted SMY container format.

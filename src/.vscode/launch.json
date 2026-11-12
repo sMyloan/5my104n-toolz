@@ -1,0 +1,21 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "5my104n_toolz (sudo)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/5my104n_toolz",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [
+                {"name": "QT_QPA_PLATFORM", "value": "xcb"},
+                {"name": "QT_STYLE_OVERRIDE", "value": "fusion"}
+            ],
+            "MIMode": "gdb",
+            "miDebuggerPath": "/usr/bin/gdb",
+            "preLaunchTask": "CMake: build"
+        }
+    ]
+}

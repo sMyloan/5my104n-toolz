@@ -1,0 +1,720 @@
+--- /tmp/opencode/smy_base/main.cpp	2026-10-27 12:03:49.564471686 +0300
++++ src/main.cpp	2026-10-27 12:08:02.963842473 +0300
+@@ -5,7 +5,13 @@
+ #include <unistd.h>
+ 
+ int main(int argc, char* argv[]) {
+-    qputenv("QT_QPA_PLATFORM", "xcb");
++    // Never force xcb: it breaks native Wayland sessions. Only fall back to xcb
++    // when no platform was requested and we are not running under Wayland.
++    if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) {
++        const bool wayland = !qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY")
++                          || qEnvironmentVariable("XDG_SESSION_TYPE").compare("wayland", Qt::CaseInsensitive) == 0;
++        if (!wayland) qputenv("QT_QPA_PLATFORM", "xcb");
++    }
+     qputenv("QT_STYLE_OVERRIDE", "fusion");
+     qunsetenv("QT_QPA_PLATFORMTHEME");
+ 
+--- /tmp/opencode/smy_base/MainWindow.h	2026-10-27 12:03:49.565557793 +0300
++++ src/MainWindow.h	2026-10-27 12:16:24.192514286 +0300
+@@ -12,6 +12,7 @@
+ #include <QGroupBox>
+ #include <QScrollArea>
+ #include <QVBoxLayout>
++#include <QPointer>
+ 
+ class FolderScanner;
+ class ScriptRunner;
+@@ -55,8 +56,8 @@
+     void applyTheme(const QString& key);
+     void applyLanguage(const QString& lang);
+     void loadToolsAsync(const QString& folder);
+-    void reloadTools();
+     void log(const QString& text);
++    void setStatus(const QString& key);
+     void forceCleanup();
+     void trackUsage(const QString& toolName);
+     QJsonObject loadConfig();
+@@ -66,7 +67,7 @@
+     QString m_toolsDir;
+     QJsonObject m_config;
+     FolderScanner* m_scanner = nullptr;
+-    ScriptRunner* m_runner = nullptr;
++    QPointer<ScriptRunner> m_runner;
+     QString m_currentWorkdir;
+     RadarWindow* m_radarWindow = nullptr;
+     QLabel* m_lblTitle = nullptr;
+@@ -82,6 +83,9 @@
+     ScriptEditor* m_scriptEditor = nullptr;
+     SettingsPanel* m_settingsPanel = nullptr;
+     QWidget* m_overlay = nullptr;
++    QLabel* m_statusLabel = nullptr;
++    QString m_statusKey = "ready";
++    bool m_showTimestamps = true;
+     
+     QString m_userName;
+     QString m_defaultPassword;
+--- /tmp/opencode/smy_base/MainWindow.cpp	2026-10-27 12:03:49.564567450 +0300
++++ src/MainWindow.cpp	2026-10-27 12:23:28.320235617 +0300
+@@ -28,6 +28,8 @@
+ #include <QFileInfo>
+ #include <QCloseEvent>
+ #include <QInputDialog>
++#include <QStatusBar>
++#include <QTime>
+ #include <unistd.h>
+ #include <QDebug>
+ 
+@@ -57,6 +59,7 @@
+     setWindowTitle("5MY104N_TOOLZ v1.0.17");
+     setMinimumSize(1100, 750);
+     m_config = loadConfig();
++    m_showTimestamps = m_config.value("timestamps").toBool(true);
+     I18N::instance().setLanguage(m_config.value("language").toString("en"));
+     buildUi();
+     applyTheme(m_config.value("theme").toString("soft_dark"));
+@@ -112,6 +115,7 @@
+     m_logEdit->setReadOnly(true);
+     m_logEdit->setFont(QFont("Consolas", 10));
+     m_logEdit->setLineWrapMode(QTextEdit::NoWrap);
++    m_logEdit->document()->setMaximumBlockCount(5000); // keep long runs responsive
+     logLayout->addWidget(m_logEdit);
+ 
+     auto* stdinRow = new QHBoxLayout();
+@@ -132,6 +136,12 @@
+     splitter->setStretchFactor(1, 1);
+     root->addWidget(splitter);
+ 
++    m_statusLabel = new QLabel(this);
++    m_statusLabel->setObjectName("status");
++    statusBar()->addWidget(m_statusLabel, 1);
++    statusBar()->setSizeGripEnabled(true);
++    setStatus("ready");
++
+     m_overlay = new QWidget(central);
+     m_overlay->setStyleSheet("background-color:rgba(0,0,0,0.6);");
+     m_overlay->hide();
+@@ -149,6 +159,7 @@
+     m_settingsPanel->setDefaultPasswordEnabled(m_defaultPasswordEnabled);
+     m_settingsPanel->setTheme(m_config.value("theme").toString("soft_dark"));
+     m_settingsPanel->setLanguage(m_config.value("language").toString("en"));
++    m_settingsPanel->setTimestamps(m_showTimestamps);
+ 
+     connect(m_settingsPanel, &SettingsPanel::userNameChanged, this, [this](const QString& name) {
+         m_userName = name; m_config["user_name"] = name; saveConfig(m_config);
+@@ -165,6 +176,9 @@
+     connect(m_settingsPanel, &SettingsPanel::languageChanged, this, [this](const QString& lang) {
+         m_config["language"] = lang; saveConfig(m_config); applyLanguage(lang);
+     });
++    connect(m_settingsPanel, &SettingsPanel::timestampsToggled, this, [this](bool enabled) {
++        m_showTimestamps = enabled; m_config["timestamps"] = enabled; saveConfig(m_config);
++    });
+     connect(m_settingsPanel, &SettingsPanel::exportLogRequested, this, &MainWindow::exportLog);
+     connect(m_settingsPanel, &SettingsPanel::showStatsRequested, this, [this]() {
+         onSettingsClosed(); showStatistics();
+@@ -203,47 +217,21 @@
+     m_btnSettings->setToolTip(I18N::instance().tr("settings"));
+     m_logGroup->setTitle(I18N::instance().tr("log"));
+     m_leStdin->setPlaceholderText(I18N::instance().tr("stdin_placeholder"));
+-    if (!m_toolsDir.isEmpty()) reloadTools();
++    setStatus(m_statusKey);
++    if (!m_toolsDir.isEmpty()) loadToolsAsync(m_toolsDir);
+     if (m_settingsPanel) m_settingsPanel->setLanguage(lang);
+ }
+ 
+-void MainWindow::reloadTools() {
+-    while (QLayoutItem* item = m_cardsLayout->takeAt(0)) {
+-        if (item->widget()) item->widget()->deleteLater();
+-        delete item;
+-    }
+-    QDir dir(m_toolsDir);
+-    QStringList files = dir.entryList(QStringList{"*.smy"}, QDir::Files);
+-    std::sort(files.begin(), files.end());
+-    for (const QString& f : files) {
+-        QString path = dir.absoluteFilePath(f);
+-        try {
+-            auto [manifest, _] = SmyFormat::unpack(path);
+-            auto* card = new ToolCard(path, manifest, this);
+-            if (card) m_cardsLayout->addWidget(card);
+-        } catch (const std::exception& e) {
+-            QString msg = QString::fromUtf8(e.what());
+-            if (msg.contains("Wrong password") || msg.contains("corrupted") || msg.contains("padding")) {
+-                QJsonObject fakeManifest;
+-                fakeManifest["name"] = QFileInfo(f).baseName().toUpper();
+-                fakeManifest["description"] = "[ENCRYPTED]";
+-                fakeManifest["author"] = "???";
+-                fakeManifest["category"] = "locked";
+-                fakeManifest["encrypted"] = true;
+-                fakeManifest["entry"] = "script";
+-                fakeManifest["runtime"] = "python3";
+-                auto* card = new ToolCard(path, fakeManifest, this);
+-                if (card) m_cardsLayout->addWidget(card);
+-            } else {
+-                auto* lbl = new QLabel("[!] Error: " + f + " — " + msg);
+-                if (lbl) m_cardsLayout->addWidget(lbl);
+-            }
+-        }
+-    }
+-}
+-
+ void MainWindow::log(const QString& text) {
+-    QString html = AnsiToHtml::convert(text, m_config.value("theme").toString("soft_dark"));
++    QString textToLog = text;
++    if (m_showTimestamps && !textToLog.isEmpty()) {
++        const QString ts = "[" + QTime::currentTime().toString("HH:mm:ss") + "] ";
++        QStringList lines = textToLog.split('\n');
++        for (QString& line : lines)
++            if (!line.isEmpty()) line.prepend(ts);
++        textToLog = lines.join('\n');
++    }
++    QString html = AnsiToHtml::convert(textToLog, m_config.value("theme").toString("soft_dark"));
+     html.replace("\n", "<br>");
+     if (html.startsWith("__REPLACE_LAST__")) {
+         html = html.mid(18);
+@@ -258,6 +246,11 @@
+     m_logEdit->moveCursor(QTextCursor::End);
+ }
+ 
++void MainWindow::setStatus(const QString& key) {
++    m_statusKey = key;
++    if (m_statusLabel) m_statusLabel->setText(I18N::instance().tr(key));
++}
++
+ void MainWindow::pickFolder() {
+     QString d = QFileDialog::getExistingDirectory(this, "Folder with .smy files");
+     if (d.isEmpty()) return;
+@@ -284,6 +277,7 @@
+     m_scanner = new FolderScanner(folder, this);
+     connect(m_scanner, &FolderScanner::finishedScan, this, &MainWindow::onScanFinished);
+     connect(m_scanner, &FolderScanner::errorOccurred, this, &MainWindow::onScanError);
++    setStatus("status_scanning");
+     m_scanner->start();
+ }
+ 
+@@ -306,16 +300,30 @@
+         } catch (const std::exception& e) {
+             const QString why = QString::fromUtf8(e.what());
+             log("[!] " + QFileInfo(path).fileName() + ": " + why);
+-            auto* lbl = new QLabel("[!] " + QFileInfo(path).fileName() + ": " + why);
+-            lbl->setStyleSheet("color:#fcee0a;");
+-            if (lbl) m_cardsLayout->addWidget(lbl);
++            if (why.contains("Wrong password") || why.contains("corrupted") || why.contains("padding")) {
++                QJsonObject fakeManifest;
++                fakeManifest["name"] = QFileInfo(path).baseName().toUpper();
++                fakeManifest["description"] = "[ENCRYPTED]";
++                fakeManifest["author"] = "???";
++                fakeManifest["category"] = "locked";
++                fakeManifest["encrypted"] = true;
++                fakeManifest["entry"] = "script";
++                fakeManifest["runtime"] = "python3";
++                m_cardsLayout->addWidget(new ToolCard(path, fakeManifest, this));
++            } else {
++                auto* lbl = new QLabel("[!] " + QFileInfo(path).fileName() + ": " + why);
++                lbl->setStyleSheet("color:#fcee0a;");
++                m_cardsLayout->addWidget(lbl);
++            }
+         }
+     }
+     QApplication::processEvents();
++    setStatus("ready");
+ }
+ 
+ void MainWindow::onScanError(const QString& msg) {
+     log("[!] " + msg);
++    setStatus("ready");
+ }
+ 
+ void MainWindow::openCompiler() {
+@@ -343,6 +351,7 @@
+     tmp.setAutoRemove(false);
+     QString workdir = tmp.path();
+     QString scriptPath, password;
++    m_currentWorkdir.clear();
+     bool encrypted = manifest.value("encrypted").toBool(false);
+     for (int attempt = 0; attempt < 3; ++attempt) {
+         try {
+@@ -353,13 +362,15 @@
+             if ((msg.contains("Wrong password") || msg.contains("corrupted")) && encrypted) {
+                 bool ok = false;
+                 password = QInputDialog::getText(this, "Password", QString("Module '%1' is encrypted.\nEnter password:").arg(manifest.value("name").toString("?")), QLineEdit::Password, "", &ok);
+-                if (!ok) return;
++                if (!ok) { QDir(workdir).removeRecursively(); return; }
+                 continue;
+             }
+             QMessageBox::critical(this, I18N::instance().tr("error"), I18N::instance().tr("extract_failed") + "\n" + msg);
++            QDir(workdir).removeRecursively();
+             return;
+         }
+     }
++    if (scriptPath.isEmpty()) { QDir(workdir).removeRecursively(); return; }
+     QString runtime = manifest.value("runtime").toString("python3");
+     QStringList cmd = runtime.split(' ', Qt::SkipEmptyParts);
+     cmd << scriptPath;
+@@ -372,8 +383,8 @@
+     connect(m_runner, &ScriptRunner::outputReady, this, &MainWindow::onRunnerOutput);
+     connect(m_runner, &ScriptRunner::replaceLast, this, &MainWindow::onRunnerReplaceLast);
+     connect(m_runner, &ScriptRunner::finishedWithCode, this, &MainWindow::onRunnerFinished);
+-    connect(m_runner, &QObject::destroyed, this, [this]() { m_runner = nullptr; });
+     m_runner->start();
++    setStatus("status_running");
+     trackUsage(manifest.value("name").toString("?"));
+ }
+ 
+@@ -406,7 +417,8 @@
+ void MainWindow::onRunnerFinished(int code) {
+     log("\n" + tr("finished") + " " + QString::number(code));
+     if (!m_currentWorkdir.isEmpty()) { QDir(m_currentWorkdir).removeRecursively(); m_currentWorkdir.clear(); }
+-    if (m_runner) m_runner->deleteLater();
++    if (m_runner) { m_runner->deleteLater(); m_runner = nullptr; }
++    setStatus("ready");
+ }
+ 
+ void MainWindow::stopRunner() {
+@@ -418,6 +430,7 @@
+     if (!m_currentWorkdir.isEmpty()) { QDir(m_currentWorkdir).removeRecursively(); m_currentWorkdir.clear(); }
+     if (m_runner) { m_runner->deleteLater(); m_runner = nullptr; }
+     log(tr("process_terminated"));
++    setStatus("ready");
+ }
+ 
+ void MainWindow::sendStdin() {
+--- /tmp/opencode/smy_base/RadarWidget.cpp	2026-10-27 12:03:49.564681375 +0300
++++ src/RadarWidget.cpp	2026-10-27 12:30:43.802888450 +0300
+@@ -1,4 +1,5 @@
+ #include "RadarWidget.h"
++#include "I18N.h"
+ #include <QPainter>
+ #include <QPen>
+ #include <QBrush>
+@@ -9,6 +10,9 @@
+ #include <QPushButton>
+ #include <QGroupBox>
+ #include <QWheelEvent>
++#include <QMouseEvent>
++#include <QToolTip>
++#include <QDateTime>
+ #include <QCloseEvent>
+ #include <QProcess>
+ #include <QRegularExpression>
+@@ -185,7 +189,15 @@
+ void RadarScanner::run() {
+     while (!m_stop) {
+         try {
+-            auto all = scanBle() + scanClassic() + scanWifi();
++            emit scanProgress(trn("radar_scan_ble"));
++            const QList<RadarDevice> ble = scanBle();
++            if (m_stop) break;
++            emit scanProgress(trn("radar_scan_classic"));
++            const QList<RadarDevice> classic = scanClassic();
++            if (m_stop) break;
++            emit scanProgress(trn("radar_scan_wifi"));
++            const QList<RadarDevice> wifi = scanWifi();
++            auto all = ble + classic + wifi;
+             for (const auto& d : all) {
+                 auto it = m_devices.find(d.mac);
+                 if (it == m_devices.end()) {
+@@ -212,6 +224,7 @@
+ 
+ RadarWidget::RadarWidget(QWidget* parent) : QWidget(parent) {
+     setMinimumSize(500, 500);
++    setMouseTracking(true);
+     auto cfg = loadRadarConfig();
+     zoom = cfg.value("zoom").toDouble(1.0);
+     showBle = cfg.value("show_ble").toBool(true);
+@@ -272,6 +285,13 @@
+     } else {
+         applyDefaultColors();
+     }
++    m_staticDirty = true;
++    update();
++}
++
++void RadarWidget::setScanning(bool on) {
++    if (m_scanning == on) return;
++    m_scanning = on;
+     update();
+ }
+ 
+@@ -282,18 +302,21 @@
+ 
+ void RadarWidget::zoomIn() {
+     zoom = std::min(m_maxZoom, zoom * 1.2);
++    m_staticDirty = true;
+     QJsonObject cfg = loadRadarConfig(); cfg["zoom"] = zoom; saveRadarConfig(cfg);
+     update();
+ }
+ 
+ void RadarWidget::zoomOut() {
+     zoom = std::max(m_minZoom, zoom / 1.2);
++    m_staticDirty = true;
+     QJsonObject cfg = loadRadarConfig(); cfg["zoom"] = zoom; saveRadarConfig(cfg);
+     update();
+ }
+ 
+ void RadarWidget::resetZoom() {
+     zoom = 1.0;
++    m_staticDirty = true;
+     QJsonObject cfg = loadRadarConfig(); cfg["zoom"] = zoom; saveRadarConfig(cfg);
+     update();
+ }
+@@ -304,35 +327,72 @@
+ 
+ void RadarWidget::animate() {
+     for (auto& d : m_devices) d.animateStep(0.08);
++    if (m_scanning) {
++        m_sweepAngle += 2.0;
++        if (m_sweepAngle >= 360.0) m_sweepAngle -= 360.0;
++    }
+     update();
+ }
+ 
+-void RadarWidget::paintEvent(QPaintEvent*) {
+-    QPainter p(this);
++void RadarWidget::rebuildStaticLayer() {
++    const QSize sz = size();
++    if (sz.isEmpty()) return;
++    m_staticLayer = QPixmap(sz);
++    m_staticLayer.fill(m_colors["bg"]);
++    QPainter p(&m_staticLayer);
+     p.setRenderHint(QPainter::Antialiasing);
+     p.setRenderHint(QPainter::TextAntialiasing);
+-    int w = width(), h = height();
+-    int cx = w / 2, cy = h / 2;
+-    int baseR = std::min(w, h) / 2 - 30;
+-    int radius = (int)(baseR * zoom);
+-    p.fillRect(0, 0, w, h, m_colors["bg"]);
++    const int w = sz.width(), h = sz.height();
++    const int cx = w / 2, cy = h / 2;
++    const int baseR = std::min(w, h) / 2 - 30;
++    const int radius = (int)(baseR * zoom);
+     p.setPen(QPen(m_colors["grid"], 1));
+     for (int i = 1; i <= 5; ++i) {
+-        int r = radius * i / 5;
++        const int r = radius * i / 5;
+         p.drawEllipse(QPoint(cx, cy), r, r);
+     }
+     p.setPen(m_colors["text"]);
+     p.setFont(QFont("Consolas", 8));
+     for (int i = 1; i <= 5; ++i) {
+-        int r = radius * i / 5;
+-        int m = m_maxRangeMeters * i / 5;
++        const int r = radius * i / 5;
++        const int m = m_maxRangeMeters * i / 5;
+         p.drawText(cx + 5, cy - r + 10, QString("%1m").arg(m));
+     }
+     p.setPen(QPen(m_colors["grid"], 1));
+     for (int i = 0; i < 360; i += 30) {
+-        double rad = i * M_PI / 180.0;
++        const double rad = i * M_PI / 180.0;
++        p.drawLine(cx, cy, cx + (int)(radius * std::cos(rad)), cy + (int)(radius * std::sin(rad)));
++    }
++    m_staticDirty = false;
++}
++
++void RadarWidget::paintEvent(QPaintEvent*) {
++    if (m_staticDirty || m_staticLayer.size() != size())
++        rebuildStaticLayer();
++    QPainter p(this);
++    p.setRenderHint(QPainter::Antialiasing);
++    p.setRenderHint(QPainter::TextAntialiasing);
++    p.drawPixmap(0, 0, m_staticLayer);
++
++    const int w = width(), h = height();
++    const int cx = w / 2, cy = h / 2;
++    const int baseR = std::min(w, h) / 2 - 30;
++    const int radius = (int)(baseR * zoom);
++
++    // Rotating sweep beam (only while a scan is running).
++    if (m_scanning && radius > 0) {
++        QColor sweep = m_colors["center"];
++        sweep.setAlpha(38);
++        p.setPen(Qt::NoPen);
++        p.setBrush(sweep);
++        p.drawPie(QRect(cx - radius, cy - radius, radius * 2, radius * 2),
++                  int(-(m_sweepAngle + 28.0) * 16), int(28 * 16));
++        sweep.setAlpha(170);
++        p.setPen(QPen(sweep, 2));
++        const double rad = m_sweepAngle * M_PI / 180.0;
+         p.drawLine(cx, cy, cx + (int)(radius * std::cos(rad)), cy + (int)(radius * std::sin(rad)));
+     }
++
+     for (const auto& d : m_devices) {
+         if (d.devType == "BLE" && showBle) drawDevice(p, d, cx, cy, radius);
+         else if (d.devType == "Classic" && showClassic) drawDevice(p, d, cx, cy, radius);
+@@ -343,6 +403,32 @@
+     p.drawEllipse(QPoint(cx, cy), 4, 4);
+ }
+ 
++void RadarWidget::mouseMoveEvent(QMouseEvent* event) {
++    const QPoint pos = event->position().toPoint();
++    const int w = width(), h = height();
++    const int cx = w / 2, cy = h / 2;
++    const int baseR = std::min(w, h) / 2 - 30;
++    const int radius = (int)(baseR * zoom);
++    for (const auto& d : m_devices) {
++        if (d.devType == "BLE" && !showBle) continue;
++        if (d.devType == "Classic" && !showClassic) continue;
++        if (d.devType == "WiFi" && !showWifi) continue;
++        int x = 0, y = 0;
++        d.getPosition(cx, cy, radius, x, y);
++        if ((pos - QPoint(x, y)).manhattanLength() > 12) continue;
++        const QString when = QDateTime::fromSecsSinceEpoch((qint64)d.lastSeen).toString("HH:mm:ss");
++        QToolTip::showText(event->globalPosition().toPoint(),
++            QString("%1\nMAC: %2\nRSSI: %3 dBm\nLast seen: %4")
++                .arg(d.name.isEmpty() ? QString("Unknown") : d.name, d.mac)
++                .arg((int)d.smoothedRssi)
++                .arg(when),
++            this);
++        return;
++    }
++    QToolTip::hideText();
++    QWidget::mouseMoveEvent(event);
++}
++
+ void RadarWidget::drawDevice(QPainter& p, const RadarDevice& d, int cx, int cy, int radius) {
+     int x, y;
+     d.getPosition(cx, cy, radius, x, y);
+@@ -404,6 +490,12 @@
+     m_btnStop->setEnabled(false);
+     btnRow->addWidget(m_btnStart); btnRow->addWidget(m_btnStop);
+     layout->addLayout(btnRow);
++
++    m_statsLabel = new QLabel(QString("Devices: 0 | Range: 100m | Zoom: %1x")
++                                  .arg(m_radar->zoom, 0, 'f', 1));
++    m_statsLabel->setAlignment(Qt::AlignCenter);
++    layout->addWidget(m_statsLabel);
++
+     m_legendLabel = new QLabel(
+         "<div style='color:#00ff80;font-family:Consolas;font-size:10px;padding:5px;'>"
+         "<b>LEGEND:</b><br>"
+@@ -415,6 +507,9 @@
+     layout->addWidget(m_legendLabel);
+     m_scanner = new RadarScanner(this);
+     connect(m_scanner, &RadarScanner::devicesFound, this, &RadarWindow::onDevicesFound);
++    connect(m_scanner, &RadarScanner::scanProgress, this, [this](const QString& stage) {
++        if (m_statsLabel) m_statsLabel->setText(stage);
++    });
+ }
+ 
+ void RadarWindow::setTheme(const QString& k) {
+@@ -459,16 +554,19 @@
+ 
+ void RadarWindow::onStart() {
+     m_btnStart->setEnabled(false); m_btnStop->setEnabled(true);
++    m_radar->setScanning(true);
+     m_scanner->start();
+ }
+ 
+ void RadarWindow::onStop() {
+     m_btnStart->setEnabled(true); m_btnStop->setEnabled(false);
++    m_radar->setScanning(false);
+     m_scanner->requestStop();
+     m_scanner->wait(3000);
+ }
+ 
+ void RadarWindow::closeEvent(QCloseEvent* e) {
++    m_radar->setScanning(false);
+     m_scanner->requestStop();
+     m_scanner->wait(3000);
+     e->accept();
+--- /tmp/opencode/smy_base/SmyFormat.cpp	2026-10-27 12:03:49.565047560 +0300
++++ src/SmyFormat.cpp	2026-10-27 12:32:43.744798177 +0300
+@@ -5,6 +5,10 @@
+ #include <QJsonDocument>
+ #include <QJsonArray>
+ #include <QCryptographicHash>
++#include <QDateTime>
++#include <QHash>
++#include <QMutex>
++#include <functional>
+ #include <zlib.h>
+ #include <openssl/evp.h>
+ #include <openssl/hmac.h>
+@@ -44,7 +48,7 @@
+ 
+ static QByteArray urlsafeB64Encode(const QByteArray& in) {
+     QByteArray b = in.toBase64();
+-    b.replace('+', '-').replace('/', '_').chop(b.endsWith('=') ? (b.endsWith("==") ? 2 : 1) : 0);
++    b.replace('+', '-').replace('/', '_');
+     while (b.endsWith('=')) b.chop(1);
+     return b;
+ }
+@@ -283,35 +287,64 @@
+     return m;
+ }
+ 
+-static bool pkgInstalledApt(const QString& pkg) {
+-    QProcess p;
+-    p.start("dpkg", QStringList{"-s", pkg});
+-    if (!p.waitForFinished(1500)) {
+-        p.kill();
+-        p.waitForFinished(1000);
+-        return false;
++static QMutex g_depCacheMutex;
++struct DepCacheEntry { qint64 timestampMs = 0; bool installed = false; };
++static QHash<QString, DepCacheEntry> g_depCache;
++static constexpr qint64 DEP_CACHE_TTL_MS = 60 * 1000; // router/system deps rarely change
++
++// Package state is expensive to probe (3 subprocesses per dependency), so keep a
++// short-lived in-memory cache. Thread-safe: cards check deps from a thread pool.
++static bool cachedDependencyCheck(const QString& key, const std::function<bool()>& probe) {
++    const qint64 now = QDateTime::currentMSecsSinceEpoch();
++    {
++        QMutexLocker lock(&g_depCacheMutex);
++        auto it = g_depCache.constFind(key);
++        if (it != g_depCache.constEnd() && now - it->timestampMs < DEP_CACHE_TTL_MS)
++            return it->installed;
++    }
++    const bool installed = probe();
++    {
++        QMutexLocker lock(&g_depCacheMutex);
++        g_depCache.insert(key, {now, installed});
+     }
+-    return p.exitCode() == 0;
++    return installed;
++}
++
++static bool pkgInstalledApt(const QString& pkg) {
++    return cachedDependencyCheck("apt:" + pkg, [&pkg]() {
++        QProcess p;
++        p.start("dpkg", QStringList{"-s", pkg});
++        if (!p.waitForFinished(1500)) {
++            p.kill();
++            p.waitForFinished(1000);
++            return false;
++        }
++        return p.exitCode() == 0;
++    });
+ }
+ static bool pkgInstalledPip(const QString& pkg) {
+-    QProcess p;
+-    p.start("pip3", QStringList{"show", pkg});
+-    if (!p.waitForFinished(2000)){
+-        p.kill();
+-        p.waitForFinished(1000);
+-        return false;
+-    }
+-    return p.exitCode() == 0;
++    return cachedDependencyCheck("pip:" + pkg, [&pkg]() {
++        QProcess p;
++        p.start("pip3", QStringList{"show", pkg});
++        if (!p.waitForFinished(2000)) {
++            p.kill();
++            p.waitForFinished(1000);
++            return false;
++        }
++        return p.exitCode() == 0;
++    });
+ }
+ static bool binaryExists(const QString& bin) {
+-    QProcess p;
+-    p.start("which", QStringList{bin});
+-    if (!p.waitForFinished(1000)){
+-        p.kill();
+-        p.waitForFinished(1000);
+-        return false;
+-    }
+-    return p.exitCode() == 0;
++    return cachedDependencyCheck("bin:" + bin, [&bin]() {
++        QProcess p;
++        p.start("which", QStringList{bin});
++        if (!p.waitForFinished(1000)) {
++            p.kill();
++            p.waitForFinished(1000);
++            return false;
++        }
++        return p.exitCode() == 0;
++    });
+ }
+ 
+ QMap<QString, QStringList> SmyFormat::checkDependencies(const QJsonObject& manifest) {
+@@ -344,5 +377,9 @@
+         if (rc != 0) ok = false;
+     }
+     if (missing.contains("binary") && !missing["binary"].isEmpty()) ok = false;
++    {
++        QMutexLocker lock(&g_depCacheMutex);
++        g_depCache.clear(); // dependency state changed — drop stale probe results
++    }
+     return ok;
+ }
+\ В конце файла нет новой строки
+--- /tmp/opencode/smy_base/CompilerDialog.cpp	2026-10-27 12:03:49.564224913 +0300
++++ src/CompilerDialog.cpp	2026-10-27 12:12:03.869492731 +0300
+@@ -13,10 +13,11 @@
+ #include <QMessageBox>
+ #include <QFileInfo>
+ #include <QRegularExpression>
++#include <QSet>
+ 
+ static const QMap<QString, QString> LANG_RUNTIME = {
+     {".py","python3"},{".sh","bash"},{".pl","perl"},{".rb","ruby"},
+-    {".go","go run"},{".rs","rustc"},{".c","gcc"},{".cpp","g++"},
++    {".go","go run"},{".rs","rust-script"},{".c","gcc"},{".cpp","g++"},
+     {".js","node"},{".php","php"},
+ };
+ 
+--- /tmp/opencode/smy_base/ScriptRunner.cpp	2026-10-27 12:03:49.564928177 +0300
++++ src/ScriptRunner.cpp	2026-10-27 12:31:55.674026994 +0300
+@@ -1,6 +1,8 @@
+ #include "ScriptRunner.h"
+ #include "AnsiToHtml.h"
+ #include <QProcessEnvironment>
++#include <QRegularExpression>
++#include <QTimer>
+ #include <QDebug>
+ 
+ ScriptRunner::ScriptRunner(const QStringList& cmd, const QString& workdir,
+@@ -36,20 +38,48 @@
+ void ScriptRunner::onReadyRead() {
+     if (m_stopRequested) return;
+     QByteArray data = m_proc->readAll();
+-    data.replace("\x1B[H\x1B[2J\x1B[3J", "");
+-    data.replace("\x1B[2J\x1B[H", "");
+-    qDebug() << "[ScriptRunner] Read" << data.size() << "bytes:" << data.left(200);
++    if (data.isEmpty()) return;
+     QString decoded = QString::fromUtf8(data);
++    // Erase-screen / cursor-home sequences come in different orders; strip them all at once.
++    static const QRegularExpression clearScreenRe(R"(\x1B\[[0-9;?]*[HJK])");
++    decoded.remove(clearScreenRe);
++    if (decoded.isEmpty()) return;
++
+     if (decoded.contains('\r') && !decoded.endsWith('\n')) {
++        // Interactive progress line: must be shown right away.
++        flushPending();
+         QString html = AnsiToHtml::convert(decoded, m_themeKey);
+         if (html.startsWith("__REPLACE_LAST__")) {
+             emit replaceLast(html.mid(18));
+             return;
+         }
+     }
+-    emit outputReady(decoded);
++
++    m_pending += decoded;
++    // Big chunk: hand it to the UI immediately. Otherwise coalesce for 30 ms so
++    // scripts that print line-by-line do not trigger a repaint per line.
++    if (m_pending.size() >= 4096) {
++        flushPending();
++        return;
++    }
++    if (!m_flushTimer) {
++        m_flushTimer = new QTimer(this);
++        m_flushTimer->setSingleShot(true);
++        connect(m_flushTimer, &QTimer::timeout, this, &ScriptRunner::flushPending);
++    }
++    if (!m_flushTimer->isActive()) m_flushTimer->start(30);
+ }
++
++void ScriptRunner::flushPending() {
++    if (m_flushTimer && m_flushTimer->isActive()) m_flushTimer->stop();
++    if (m_pending.isEmpty()) return;
++    QString chunk;
++    chunk.swap(m_pending);
++    emit outputReady(chunk);
++}
++
+ void ScriptRunner::onFinished(int exitCode, QProcess::ExitStatus exitStatus) {
++    flushPending();
+     if (m_proc) {
+         QByteArray remaining = m_proc->readAll();
+         if (!remaining.isEmpty()) {
