@@ -1,0 +1,2 @@
+set(__QT_DEPLOY_TARGET_5my104n_toolz_FILE /home/smyloan/Desktop/cpp_smyloan/build/5my104n_toolz)
+set(__QT_DEPLOY_TARGET_5my104n_toolz_TYPE EXECUTABLE)

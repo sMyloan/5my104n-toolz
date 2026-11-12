@@ -450,98 +450,65 @@ void RadarWidget::drawDevice(QPainter& p, const RadarDevice& d, int cx, int cy, 
 }
 
 RadarWindow::RadarWindow(QWidget* parent) : QDialog(parent) {
-    //переведенный заголовок окна
-    setWindowTitle(trn("radar_window_title"));
-    setMinimumSize(700, 750);
-    resize(700, 750);
-    setWindowFlags(Qt::Window);
-    auto* layout = new QVBoxLayout(this);
-    layout->setSpacing(10);
-    
-    m_titleLabel = new QLabel(trn("radar_title"));
-    m_titleLabel->setStyleSheet("QLabel{color:#00ff80;font-size:18px;font-weight:bold;font-family:Consolas;padding:10px;border-bottom:2px solid #00ff80;}");
-    m_titleLabel->setAlignment(Qt::AlignCenter);
-    layout->addWidget(m_titleLabel);
-    
-    m_radar = new RadarWidget();
-    layout->addWidget(m_radar);
-    
-    auto* zoomRow = new QHBoxLayout();
-    auto* bIn = new QPushButton(trn("zoom_in")); connect(bIn, &QPushButton::clicked, m_radar, &RadarWidget::zoomIn);
-    auto* bOut = new QPushButton(trn("zoom_out")); connect(bOut, &QPushButton::clicked, m_radar, &RadarWidget::zoomOut);
-    auto* bRst = new QPushButton(trn("zoom_reset")); connect(bRst, &QPushButton::clicked, m_radar, &RadarWidget::resetZoom);
-    zoomRow->addWidget(bIn); zoomRow->addWidget(bOut); zoomRow->addWidget(bRst);
-    layout->addLayout(zoomRow);
-    
-    auto* fg = new QGroupBox(trn("device_filters"));
-    auto* fl = new QHBoxLayout(fg);
-    m_cbBle = new QCheckBox(trn("filter_ble")); m_cbBle->setChecked(m_radar->showBle);
-    connect(m_cbBle, &QCheckBox::checkStateChanged, this, &RadarWindow::onFilterChanged);
-    m_cbClassic = new QCheckBox(trn("filter_classic")); m_cbClassic->setChecked(m_radar->showClassic);
-    connect(m_cbClassic, &QCheckBox::checkStateChanged, this, &RadarWindow::onFilterChanged);
-    m_cbWifi = new QCheckBox(trn("filter_wifi")); m_cbWifi->setChecked(m_radar->showWifi);
-    connect(m_cbWifi, &QCheckBox::checkStateChanged, this, &RadarWindow::onFilterChanged);
-    fl->addWidget(m_cbBle); fl->addWidget(m_cbClassic); fl->addWidget(m_cbWifi);
-    layout->addWidget(fg);
-    
-    auto* btnRow = new QHBoxLayout();
-    m_btnStart = new QPushButton(trn("start_scan"));
-    connect(m_btnStart, &QPushButton::clicked, this, &RadarWindow::onStart);
-    m_btnStop = new QPushButton(trn("stop_scan"));
-    connect(m_btnStop, &QPushButton::clicked, this, &RadarWindow::onStop);
-    m_btnStop->setEnabled(false);
-    btnRow->addWidget(m_btnStart); btnRow->addWidget(m_btnStop);
-    layout->addLayout(btnRow);
-    
-    m_statsLabel = new QLabel(trn("devices_count").arg(0).arg(m_radar->zoom, 0, 'f', 1));
-    m_statsLabel->setAlignment(Qt::AlignCenter);
-    layout->addWidget(m_statsLabel);
-    
-    m_legendLabel = new QLabel();
-    layout->addWidget(m_legendLabel);
-    
-    m_scanner = new RadarScanner(this);
-    connect(m_scanner, &RadarScanner::devicesFound, this, &RadarWindow::onDevicesFound);
-    connect(m_scanner, &RadarScanner::scanProgress, this, [this](const QString& stage) {
-        if (m_statsLabel) m_statsLabel->setText(stage);
-    });
+//переведенный заголовок окна
+setWindowTitle(trn("radar_window_title"));
+setMinimumSize(700, 750); resize(700, 750); setWindowFlags(Qt::Window);
+auto* layout = new QVBoxLayout(this); layout->setSpacing(10);
+m_titleLabel = new QLabel(trn("radar_title"));
+m_titleLabel->setStyleSheet("QLabel{color:#00ff80;font-size:18px;font-weight:bold;font-family:Consolas;padding:10px;border-bottom:2px solid #00ff80;}");
+m_titleLabel->setAlignment(Qt::AlignCenter); layout->addWidget(m_titleLabel);
+m_radar = new RadarWidget(); layout->addWidget(m_radar);
+auto* zoomRow = new QHBoxLayout();
+auto* bIn = new QPushButton(trn("zoom_in")); connect(bIn, &QPushButton::clicked, m_radar, &RadarWidget::zoomIn);
+auto* bOut = new QPushButton(trn("zoom_out")); connect(bOut, &QPushButton::clicked, m_radar, &RadarWidget::zoomOut);
+auto* bRst = new QPushButton(trn("zoom_reset")); connect(bRst, &QPushButton::clicked, m_radar, &RadarWidget::resetZoom);
+zoomRow->addWidget(bIn); zoomRow->addWidget(bOut); zoomRow->addWidget(bRst); layout->addLayout(zoomRow);
+auto* fg = new QGroupBox(trn("device_filters"));
+auto* fl = new QHBoxLayout(fg);
+m_cbBle = new QCheckBox(trn("filter_ble")); m_cbBle->setChecked(m_radar->showBle);
+connect(m_cbBle, &QCheckBox::checkStateChanged, this, &RadarWindow::onFilterChanged);
+m_cbClassic = new QCheckBox(trn("filter_classic")); m_cbClassic->setChecked(m_radar->showClassic);
+connect(m_cbClassic, &QCheckBox::checkStateChanged, this, &RadarWindow::onFilterChanged);
+m_cbWifi = new QCheckBox(trn("filter_wifi")); m_cbWifi->setChecked(m_radar->showWifi);
+connect(m_cbWifi, &QCheckBox::checkStateChanged, this, &RadarWindow::onFilterChanged);
+fl->addWidget(m_cbBle); fl->addWidget(m_cbClassic); fl->addWidget(m_cbWifi); layout->addWidget(fg);
+auto* btnRow = new QHBoxLayout();
+m_btnStart = new QPushButton(trn("start_scan"));
+connect(m_btnStart, &QPushButton::clicked, this, &RadarWindow::onStart);
+m_btnStop = new QPushButton(trn("stop_scan"));
+connect(m_btnStop, &QPushButton::clicked, this, &RadarWindow::onStop);
+m_btnStop->setEnabled(false);
+btnRow->addWidget(m_btnStart); btnRow->addWidget(m_btnStop); layout->addLayout(btnRow);
+m_statsLabel = new QLabel(trn("devices_count").arg(0).arg(m_radar->zoom, 0, 'f', 1));
+m_statsLabel->setAlignment(Qt::AlignCenter); layout->addWidget(m_statsLabel);
+m_legendLabel = new QLabel(); layout->addWidget(m_legendLabel);
+m_scanner = new RadarScanner(this);
+connect(m_scanner, &RadarScanner::devicesFound, this, &RadarWindow::onDevicesFound);
+connect(m_scanner, &RadarScanner::scanProgress, this, [this](const QString& stage) { if (m_statsLabel) m_statsLabel->setText(stage); });
 }
 
 void RadarWindow::setTheme(const QString& k) {
-    m_radar->setTheme(k);
-    QString color, bg, border, textColor;
-    
-    if (k == "hack")      { color = "#00ff00"; bg = "#000a00"; border = "#00ff00"; textColor = "#00ff00"; }
-    else if (k == "arasaka") { color = "#cc0000"; bg = "#1a0000"; border = "#cc0000"; textColor = "#e0e0e0"; }
-    else if (k == "light")   { 
-        //исправлен контраст для светлой темы
-        color = "#0064c8"; bg = "#e8e8e8"; border = "#0064c8"; textColor = "#1a1a1a"; 
-    }
-    else                     { color = "#00ff80"; bg = "#001a00"; border = "#00ff80"; textColor = "#d4d4d4"; }
-    
-    QString titleStyle = QString("QLabel{color:%1;font-size:18px;font-weight:bold;font-family:Consolas;padding:10px;border-bottom:2px solid %1;}").arg(color);
-    QString statsStyle = QString("QLabel{color:%1;font-family:Consolas;font-size:11px;padding:5px;}").arg(textColor);
-    QString btnStyle = QString("QPushButton{background-color:%2;color:%3;border:2px solid %1;padding:8px;font-weight:bold;font-family:Consolas;}QPushButton:hover{background-color:%1;color:%2;}").arg(color, bg, textColor);
-    
-    if (m_titleLabel) m_titleLabel->setStyleSheet(titleStyle);
-    if (m_statsLabel) m_statsLabel->setStyleSheet(statsStyle);
-    if (m_btnStart)   m_btnStart->setStyleSheet(btnStyle);
-    if (m_btnStop)    m_btnStop->setStyleSheet(btnStyle);
-    
-    if (m_legendLabel) {
-        //переведенная легенда радара
-        QString legendHtml = QString(
-            "<div style='color:%1;font-family:Consolas;font-size:10px;padding:5px;'>"
-            "<b>%2</b><br>"
-            "• %3<br>• %4<br>• %5<br>"
-            "• %6<br>"
-            "• %7<br>"
-            "• %8<br>"
-            "• %9</div>").arg(textColor, trn("legend_title"), trn("legend_ble"), trn("legend_classic"),
-                              trn("legend_wifi"), trn("legend_distance"), trn("legend_closer"),
-                              trn("legend_angle"), trn("legend_scroll"));
-            m_legendLabel->setText(legendHtml);
-    }
+m_radar->setTheme(k);
+QString color, bg, border, textColor;
+if (k == "hack")      { color = "#00ff00"; bg = "#000a00"; border = "#00ff00"; textColor = "#00ff00"; }
+else if (k == "arasaka") { color = "#cc0000"; bg = "#1a0000"; border = "#cc0000"; textColor = "#e0e0e0"; }
+else if (k == "light")   {
+//исправлен контраст для светлой темы
+color = "#0064c8"; bg = "#e8e8e8"; border = "#0064c8"; textColor = "#1a1a1a";
+}
+else                     { color = "#00ff80"; bg = "#001a00"; border = "#00ff80"; textColor = "#d4d4d4"; }
+QString titleStyle = QString("QLabel{color:%1;font-size:18px;font-weight:bold;font-family:Consolas;padding:10px;border-bottom:2px solid %1;}").arg(color);
+QString statsStyle = QString("QLabel{color:%1;font-family:Consolas;font-size:11px;padding:5px;}").arg(textColor);
+QString btnStyle = QString("QPushButton{background-color:%2;color:%3;border:2px solid %1;padding:8px;font-weight:bold;font-family:Consolas;}QPushButton:hover{background-color:%1;color:%2;}").arg(color, bg, textColor);
+if (m_titleLabel) m_titleLabel->setStyleSheet(titleStyle);
+if (m_statsLabel) m_statsLabel->setStyleSheet(statsStyle);
+if (m_btnStart)   m_btnStart->setStyleSheet(btnStyle);
+if (m_btnStop)    m_btnStop->setStyleSheet(btnStyle);
+if (m_legendLabel) {
+//переведенная легенда радара
+QString legendHtml = QString("<div style='color:%1;font-family:Consolas;font-size:10px;padding:5px;'><b>%2</b><br>• %3<br>• %4<br>• %5<br>• %6<br>• %7<br>• %8<br>• %9</div>").arg(textColor, trn("legend_title"), trn("legend_ble"), trn("legend_classic"), trn("legend_wifi"), trn("legend_distance"), trn("legend_closer"), trn("legend_angle"), trn("legend_scroll"));
+m_legendLabel->setText(legendHtml);
+}
 }
 
 void RadarWindow::onFilterChanged() {
@@ -557,9 +524,8 @@ void RadarWindow::onFilterChanged() {
 }
 
 void RadarWindow::onDevicesFound(const QList<RadarDevice>& devices) {
-    m_radar->updateDevices(devices);
-    m_deviceCount = devices.size();
-    m_statsLabel->setText(trn("devices_count").arg(m_deviceCount).arg(m_radar->zoom, 0, 'f', 1));
+m_radar->updateDevices(devices); m_deviceCount = devices.size();
+m_statsLabel->setText(trn("devices_count").arg(m_deviceCount).arg(m_radar->zoom, 0, 'f', 1));
 }
 
 void RadarWindow::onStart() {
